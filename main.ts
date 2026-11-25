@@ -43,9 +43,11 @@ if (width === 0 || height === 0 || width > SIDE_LIMIT || height > SIDE_LIMIT) {
 }
 
 // Second check on the header: the IHDR chunk's CRC32 must match, so a
-// corrupted header is refused, and the file must end with a proper IEND
-// trailer, so a truncated PNG is refused. CRC32 is the IEEE 802.3
-// polynomial over the chunk type plus its data.
+// corrupted header is refused. Third check: walk every chunk, verifying
+// each chunk's CRC32, and confirm the file ends exactly at the IEND
+// chunk, so a corrupt chunk anywhere is refused and nothing may trail
+// the image. CRC32 is the IEEE 802.3 polynomial over the chunk type
+// plus its data.
 const crcTable = (() => {
   const table = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -63,9 +65,22 @@ function crc32(buf) {
 if (crc32(image.subarray(12, 29)) !== image.readUInt32BE(29)) {
   throw new Error('entry.png IHDR chunk CRC mismatch');
 }
-const trailer = image.subarray(image.length - 12);
-if (trailer.readUInt32BE(0) !== 0 || trailer.subarray(4, 8).toString('latin1') !== 'IEND') {
-  throw new Error('entry.png has no IEND trailer');
+let offset = 8;
+let sawIEND = false;
+while (offset + 8 <= image.length) {
+  const chunkLength = image.readUInt32BE(offset);
+  const chunkType = image.subarray(offset + 4, offset + 8).toString('latin1');
+  if (offset + 12 + chunkLength > image.length) {
+    throw new Error(`entry.png chunk ${chunkType} is truncated`);
+  }
+  if (crc32(image.subarray(offset + 4, offset + 8 + chunkLength)) !== image.readUInt32BE(offset + 8 + chunkLength)) {
+    throw new Error(`entry.png chunk ${chunkType} CRC mismatch`);
+  }
+  offset += 12 + chunkLength;
+  if (chunkType === 'IEND') { sawIEND = true; break; }
+}
+if (!sawIEND || offset !== image.length) {
+  throw new Error('entry.png does not end cleanly at the IEND chunk');
 }
 
 mkdirSync(outputDir, { recursive: true });
